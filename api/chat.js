@@ -3,10 +3,14 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({
+      error: "Method not allowed"
+    });
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -24,6 +28,8 @@ export default async function handler(req, res) {
         : (req.body || {});
 
     const message = String(body.message || "").trim();
+    const language =
+      body.language === "en" ? "English" : "Tamil";
 
     if (!message) {
       return res.status(400).json({
@@ -41,7 +47,29 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           model: "gpt-5.6-luna",
-          input: message
+          input: [
+            {
+              role: "system",
+              content: [
+                {
+                  type: "input_text",
+                  text:
+                    "You are Nila, a helpful personal assistant. Reply clearly and practically. Prefer " +
+                    language +
+                    " unless the user asks otherwise."
+                }
+              ]
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: message
+                }
+              ]
+            }
+          ]
         })
       }
     );
@@ -56,9 +84,32 @@ export default async function handler(req, res) {
       });
     }
 
+    let reply = "";
+
+    if (typeof data.output_text === "string") {
+      reply = data.output_text;
+    }
+
+    if (!reply && Array.isArray(data.output)) {
+      for (const item of data.output) {
+        if (!Array.isArray(item?.content)) {
+          continue;
+        }
+
+        for (const part of item.content) {
+          if (
+            part?.type === "output_text" &&
+            typeof part?.text === "string"
+          ) {
+            reply += part.text;
+          }
+        }
+      }
+    }
+
     return res.status(200).json({
       reply:
-        data.output_text ||
+        reply.trim() ||
         "No text response returned."
     });
 
