@@ -1,121 +1,160 @@
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
   if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Method not allowed"
-    });
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const { message } = req.body || {};
 
-  if (!apiKey) {
-    return res.status(500).json({
-      error: "OPENAI_API_KEY is not configured"
-    });
+  if (!message) {
+    return res.status(400).json({ error: "Message is required" });
   }
 
+  // 1. OPENAI
   try {
-    const body =
-      typeof req.body === "string"
-        ? JSON.parse(req.body)
-        : (req.body || {});
-
-    const message = String(body.message || "").trim();
-    const language =
-      body.language === "en" ? "English" : "Tamil";
-
-    if (!message) {
-      return res.status(400).json({
-        error: "Message is required"
-      });
-    }
-
-    const response = await fetch(
-      "https://api.openai.com/v1/responses",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: "gpt-5.6-luna",
-          input: [
-            {
-              role: "system",
-              content: [
-                {
-                  type: "input_text",
-                  text:
-                    "You are Nila, a helpful personal assistant. Reply clearly and practically. Prefer " +
-                    language +
-                    " unless the user asks otherwise."
-                }
-              ]
-            },
-            {
-              role: "user",
-              content: [
-                {
-                  type: "input_text",
-                  text: message
-                }
-              ]
-            }
-          ]
-        })
-      }
-    );
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error:
-          data?.error?.message ||
-          "OpenAI request failed"
-      });
-    }
-
-    let reply = "";
-
-    if (typeof data.output_text === "string") {
-      reply = data.output_text;
-    }
-
-    if (!reply && Array.isArray(data.output)) {
-      for (const item of data.output) {
-        if (!Array.isArray(item?.content)) {
-          continue;
+    if (process.env.OPENAI_API_KEY) {
+      const openaiResponse = await fetch(
+        "https://api.openai.com/v1/responses",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-5.6-luna",
+            input: message,
+          }),
         }
+      );
 
-        for (const part of item.content) {
-          if (
-            part?.type === "output_text" &&
-            typeof part?.text === "string"
-          ) {
-            reply += part.text;
-          }
+      if (openaiResponse.ok) {
+        const data = await openaiResponse.json();
+
+        const reply =
+          data.output_text ||
+          data.output
+            ?.flatMap((x) => x.content || [])
+            ?.find((x) => x.type === "output_text")?.text;
+
+        if (reply) {
+          return res.status(200).json({
+            reply,
+            provider: "openai",
+          });
         }
+      } else {
+        console.log(
+          "OpenAI failed:",
+          openaiResponse.status,
+          await openaiResponse.text()
+        );
       }
     }
-
-    return res.status(200).json({
-      reply:
-        reply.trim() ||
-        "No text response returned."
-    });
-
   } catch (error) {
-    return res.status(500).json({
-      error: "Server error"
-    });
+    console.log("OpenAI error:", error.message);
   }
-}
+
+  // 2. GEMINI
+  try {
+    if (process.env.GEMINI_API_KEY) {
+      const geminiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: message,
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
+
+      if (geminiResponse.ok) {
+        const data = await geminiResponse.json();
+
+        const reply =
+          data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (reply) {
+          return res.status(200).json({
+            reply,
+            provider: "gemini",
+          });
+        }
+      } else {
+        console.log(
+          "Gemini failed:",
+          geminiResponse.status,
+          await geminiResponse.text()
+        );
+      }
+    }
+  } catch (error) {
+    console.log("Gemini error:", error.message);
+  }
+
+  // 3. GROQ
+  try {
+    if (process.env.GROQ_API_KEY) {
+      const groqResponse = await fetch(
+        "https://api.groq.com/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "llama-3.3-70b-versatile",
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are Nila, a friendly AI assistant. Reply in the same language the user uses.",
+              },
+              {
+                role: "user",
+                content: message,
+              },
+            ],
+          }),
+        }
+      );
+
+      if (groqResponse.ok) {
+        const data = await groqResponse.json();
+
+        const reply =
+          data?.choices?.[0]?.message?.content;
+
+        if (reply) {
+          return res.status(200).json({
+            reply,
+            provider: "groq",
+          });
+        }
+      } else {
+        console.log(
+          "Groq failed:",
+          groqResponse.status,
+          await groqResponse.text()
+        );
+      }
+    }
+  } catch (error) {
+    console.log("Groq error:", error.message);
+  }
+
+  return res.status(500).json({
+    error: "All AI providers failed",
+  });
+                }
