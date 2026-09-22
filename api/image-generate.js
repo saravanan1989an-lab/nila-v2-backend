@@ -23,84 +23,28 @@ export default async function handler(req, res) {
 
   const cleanPrompt = String(prompt).trim();
 
-  // =====================================================
-  // 1. OPENAI IMAGE
-  // =====================================================
-
-  try {
-    if (process.env.OPENAI_API_KEY) {
-      const response = await fetch(
-        "https://api.openai.com/v1/images/generations",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "gpt-image-2",
-            prompt: cleanPrompt,
-            size: "1024x1024",
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok) {
-        const item = data?.data?.[0];
-
-        let image = null;
-
-        if (item?.b64_json) {
-          image =
-            "data:image/png;base64," +
-            item.b64_json;
-        } else if (item?.url) {
-          image = item.url;
-        }
-
-        if (image) {
-          return res.status(200).json({
-            image,
-            provider: "openai",
-          });
-        }
-      } else {
-        console.log(
-          "OpenAI image failed:",
-          response.status,
-          data?.error?.message || data
-        );
-      }
-    }
-  } catch (error) {
-    console.log(
-      "OpenAI image error:",
-      error.message
-    );
-  }
+  const errors = [];
 
   // =====================================================
-  // 2. GEMINI IMAGE
+  // 1. GEMINI IMAGE
   // =====================================================
 
   try {
     if (process.env.GEMINI_API_KEY) {
       const response = await fetch(
-        "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-image:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent",
         {
           method: "POST",
 
           headers: {
             "Content-Type": "application/json",
-            "x-goog-api-key":
-              process.env.GEMINI_API_KEY,
+            "x-goog-api-key": process.env.GEMINI_API_KEY,
           },
 
           body: JSON.stringify({
             contents: [
               {
+                role: "user",
                 parts: [
                   {
                     text: cleanPrompt,
@@ -110,10 +54,7 @@ export default async function handler(req, res) {
             ],
 
             generationConfig: {
-              responseModalities: [
-                "TEXT",
-                "IMAGE",
-              ],
+              responseModalities: ["IMAGE"],
             },
           }),
         }
@@ -123,45 +64,122 @@ export default async function handler(req, res) {
 
       if (response.ok) {
         const parts =
-          data?.candidates?.[0]
-            ?.content?.parts || [];
+          data?.candidates?.[0]?.content?.parts || [];
 
         for (const part of parts) {
           const inlineData =
-            part.inlineData ||
-            part.inline_data;
+            part.inlineData || part.inline_data;
 
-          if (
-            inlineData?.data
-          ) {
+          if (inlineData?.data) {
             const mimeType =
               inlineData.mimeType ||
               inlineData.mime_type ||
               "image/png";
 
-            const image =
-              `data:${mimeType};base64,${inlineData.data}`;
-
             return res.status(200).json({
-              image,
+              image:
+                `data:${mimeType};base64,${inlineData.data}`,
               provider: "gemini",
             });
           }
         }
+
+        errors.push(
+          "Gemini: response received but no image data returned"
+        );
       } else {
-        console.log(
-          "Gemini image failed:",
-          response.status,
-          JSON.stringify(data)
+        const message =
+          data?.error?.message ||
+          JSON.stringify(data);
+
+        errors.push(
+          `Gemini ${response.status}: ${message}`
         );
       }
+    } else {
+      errors.push(
+        "Gemini: GEMINI_API_KEY missing"
+      );
     }
   } catch (error) {
-    console.log(
-      "Gemini image error:",
-      error.message
+    errors.push(
+      "Gemini error: " + error.message
     );
   }
+
+
+  // =====================================================
+  // 2. OPENAI IMAGE
+  // =====================================================
+
+  try {
+    if (process.env.OPENAI_API_KEY) {
+      const response = await fetch(
+        "https://api.openai.com/v1/images/generations",
+        {
+          method: "POST",
+
+          headers: {
+            Authorization:
+              `Bearer ${process.env.OPENAI_API_KEY}`,
+
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            model: "gpt-image-1",
+            prompt: cleanPrompt,
+            size: "1024x1024",
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (response.ok) {
+        const item =
+          data?.data?.[0];
+
+        if (item?.b64_json) {
+          return res.status(200).json({
+            image:
+              "data:image/png;base64," +
+              item.b64_json,
+            provider: "openai",
+          });
+        }
+
+        if (item?.url) {
+          return res.status(200).json({
+            image: item.url,
+            provider: "openai",
+          });
+        }
+
+        errors.push(
+          "OpenAI: response received but no image returned"
+        );
+      } else {
+        const message =
+          data?.error?.message ||
+          JSON.stringify(data);
+
+        errors.push(
+          `OpenAI ${response.status}: ${message}`
+        );
+      }
+    } else {
+      errors.push(
+        "OpenAI: OPENAI_API_KEY missing"
+      );
+    }
+  } catch (error) {
+    errors.push(
+      "OpenAI error: " + error.message
+    );
+  }
+
 
   // =====================================================
   // 3. HUGGING FACE IMAGE
@@ -177,6 +195,7 @@ export default async function handler(req, res) {
           headers: {
             Authorization:
               `Bearer ${process.env.HF_TOKEN}`,
+
             "Content-Type":
               "application/json",
           },
@@ -197,41 +216,45 @@ export default async function handler(req, res) {
           await response.arrayBuffer();
 
         const base64 =
-          Buffer.from(
-            arrayBuffer
-          ).toString("base64");
-
-        const image =
-          `data:${contentType};base64,${base64}`;
+          Buffer
+            .from(arrayBuffer)
+            .toString("base64");
 
         return res.status(200).json({
-          image,
+          image:
+            `data:${contentType};base64,${base64}`,
           provider: "huggingface",
         });
-      } else {
-        const errorText =
-          await response.text();
-
-        console.log(
-          "Hugging Face image failed:",
-          response.status,
-          errorText
-        );
       }
+
+      const errorText =
+        await response.text();
+
+      errors.push(
+        `Hugging Face ${response.status}: ${errorText}`
+      );
+    } else {
+      errors.push(
+        "Hugging Face: HF_TOKEN missing"
+      );
     }
   } catch (error) {
-    console.log(
-      "Hugging Face image error:",
+    errors.push(
+      "Hugging Face error: " +
       error.message
     );
   }
 
+
   // =====================================================
-  // ALL FAILED
+  // ALL PROVIDERS FAILED
   // =====================================================
 
   return res.status(500).json({
     error:
-      "Image generation failed on all available providers.",
+      "Image generation failed on all providers.",
+
+    details:
+      errors,
   });
-      }
+              }
